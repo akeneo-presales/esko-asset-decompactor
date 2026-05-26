@@ -140,7 +140,6 @@ function getConfig() {
     'AKENEO_GS1_RAW_XML_ATTRIBUTE',
     'AKENEO_MEDIA_ASSET_FAMILY',
     'AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE',
-    'AKENEO_STATUS_CARD_ATTRIBUTE',
   ];
   const missing = required.filter(k => !process.env[k]);
   if (missing.length) {
@@ -169,7 +168,6 @@ function getConfig() {
     gs1RawXmlAttribute:         process.env.AKENEO_GS1_RAW_XML_ATTRIBUTE,
     mediaAssetFamily:           process.env.AKENEO_MEDIA_ASSET_FAMILY,
     mediaAssetProductRefAttr:   process.env.AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE,
-    statusCardAttribute:        process.env.AKENEO_STATUS_CARD_ATTRIBUTE,
     assetFamilyFilter,          // Set<string> | null
   };
 }
@@ -986,164 +984,6 @@ async function pushMediaFilesToAssetFamily(
   return { total: mediaFiles.length, uploaded, skipped, errors };
 }
 
-// ---------------------------------------------------------------------------
-// Status card SVG generator
-// ---------------------------------------------------------------------------
-
-/**
- * Generates a standalone SVG status card (1000×370px) summarising the
- * result of the ZIP processing pipeline.
- *
- * The SVG uses only safe SVG primitives and inline attributes — no external
- * fonts, no CSS variables, no JavaScript — so it renders correctly inside
- * Akeneo's product page textarea preview.
- *
- * The root <svg> element carries a uniqueID attribute set to the value of
- * the AKENEO_STATUS_CARD_ATTRIBUTE env var, as required by the caller.
- *
- * @param {{
- *   uniqueId:        string,   — value for the uniqueID attribute (attribute code)
- *   productId:       string,
- *   action:          string,   — "created" | "updated"
- *   sourceFile:      string,
- *   processedAt:     string,   — ISO date string
- *   assetFamilyCode: string,
- *   mediaUploaded:   number,
- *   mediaTotal:      number,
- *   gs1Attribute:    string,
- *   gs1RawAttr:      string,
- *   flagAttribute:   string,
- *   statusAttribute: string,
- *   assetCode:       string,
- *   assetFamilyCode2:string,
- *   eventType:       string,
- *   locale:          string,
- * }} opts
- * @returns {string}  SVG markup string
- */
-function generateStatusCard(opts) {
-  const {
-    uniqueId, productId, action, sourceFile, processedAt,
-    assetFamilyCode, mediaUploaded, mediaTotal,
-    gs1Attribute, gs1RawAttr, flagAttribute, statusAttribute,
-    assetCode, assetFamilyCode2, eventType, locale,
-  } = opts;
-
-  // Format the processedAt date as "DD Mon YYYY, HH:MM"
-  const d       = new Date(processedAt);
-  const months  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const dateStr = `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}, `
-                + `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
-
-  // Action badge colour: green for created, purple for updated
-  const badgeFill   = action === 'created' ? '#EAF3DE' : '#EEEDFE';
-  const badgeStroke = action === 'created' ? '#97C459' : '#AFA9EC';
-  const badgeText   = action === 'created' ? '#27500A' : '#3C3489';
-  const badgeDot    = action === 'created' ? '#3B6D11' : '#534AB7';
-
-  // Truncate long strings for display
-  const trunc = (s, n) => s && s.length > n ? s.slice(0, n - 1) + '…' : (s || '');
-
-  // Pipeline pill data
-  const pills = [
-    { label: trunc(gs1Attribute,  22), color: '#EEEDFE', stroke: '#AFA9EC', dot: '#534AB7', text: '#3C3489' },
-    { label: trunc(gs1RawAttr,    18), color: '#EEEDFE', stroke: '#AFA9EC', dot: '#534AB7', text: '#3C3489' },
-    { label: trunc(flagAttribute, 22), color: '#EAF3DE', stroke: '#97C459', dot: '#3B6D11', text: '#27500A' },
-    { label: trunc(statusAttribute,22),color: '#EEEDFE', stroke: '#AFA9EC', dot: '#534AB7', text: '#3C3489' },
-  ];
-
-  // Lay out pills with dynamic spacing
-  let pillX = 32;
-  const pillY = 264, pillH = 28, dotR = 5, textOff = 11, pillPadL = 20, pillPadR = 10, gap = 22;
-  const pillRects = pills.map(p => {
-    const labelW = Math.min(p.label.length * 7.2 + pillPadL + pillPadR + dotR * 2, 220);
-    const rect = { x: pillX, w: Math.round(labelW), ...p };
-    pillX += Math.round(labelW) + gap;
-    return rect;
-  });
-
-  // Generate connector dashes between pills
-  const connectors = pillRects.slice(0, -1).map((r, i) => {
-    const x1 = r.x + r.w + 2;
-    const x2 = pillRects[i + 1].x - 2;
-    return `<line x1="${x1}" y1="${pillY + pillH / 2}" x2="${x2}" y2="${pillY + pillH / 2}" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="3 2"/>`;
-  }).join('');
-
-  const pillsSvg = pillRects.map(r => `
-    <rect x="${r.x}" y="${pillY}" width="${r.w}" height="${pillH}" rx="6" fill="${r.color}" stroke="${r.stroke}" stroke-width="0.5"/>
-    <circle cx="${r.x + pillPadL - dotR}" cy="${pillY + pillH / 2}" r="${dotR}" fill="${r.dot}"/>
-    <text x="${r.x + pillPadL + 4}" y="${pillY + pillH / 2 + 4}" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="${r.text}">${r.label}</text>
-  `).join('');
-
-  return `<svg width="1000" height="370" viewBox="0 0 1000 370" xmlns="http://www.w3.org/2000/svg" uniqueID="${uniqueId}">
-  <rect width="1000" height="370" rx="12" fill="#F8F7F5"/>
-  <rect x="0" y="0" width="6" height="370" rx="3" fill="#4B49D1"/>
-  <rect x="3" y="0" width="3" height="370" fill="#4B49D1"/>
-  <rect x="32" y="28" width="48" height="48" rx="12" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
-  <path d="M49 52 L54 57 L63 47" fill="none" stroke="#534AB7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="56" cy="52" r="10" fill="none" stroke="#534AB7" stroke-width="2"/>
-  <text x="96" y="50" font-family="'Inter',system-ui,sans-serif" font-size="18" font-weight="600" fill="#26215C">Product successfully processed</text>
-  <text x="96" y="70" font-family="'Inter',system-ui,sans-serif" font-size="13" fill="#888780">Esko ZIP archive decoded and enriched — all assets imported</text>
-  <rect x="32" y="98" width="936" height="0.5" fill="#D3D1C7"/>
-  <rect x="32" y="118" width="212" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
-  <text x="52" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">PRODUCT</text>
-  <text x="52" y="167" font-family="'Inter',system-ui,sans-serif" font-size="15" font-weight="600" fill="#26215C">${trunc(productId, 22)}</text>
-  <rect x="52" y="176" width="64" height="16" rx="8" fill="${badgeFill}" stroke="${badgeStroke}" stroke-width="0.5"/>
-  <circle cx="63" cy="184" r="4" fill="${badgeDot}"/>
-  <text x="70" y="188" font-family="'Inter',system-ui,sans-serif" font-size="10" font-weight="500" fill="${badgeText}">${action}</text>
-  <rect x="260" y="118" width="212" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
-  <text x="280" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">SOURCE FILE</text>
-  <text x="280" y="167" font-family="'Inter',system-ui,sans-serif" font-size="12" font-weight="500" fill="#26215C">${trunc(sourceFile, 28)}</text>
-  <text x="280" y="185" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">GS1 artwork content v3</text>
-  <rect x="488" y="118" width="212" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
-  <text x="508" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">MEDIA ASSETS</text>
-  <text x="508" y="167" font-family="'Inter',system-ui,sans-serif" font-size="22" font-weight="600" fill="#26215C">${mediaUploaded}</text>
-  <text x="${508 + String(mediaUploaded).length * 14}" y="167" font-family="'Inter',system-ui,sans-serif" font-size="13" fill="#639922"> / ${mediaTotal} uploaded</text>
-  <text x="508" y="185" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">${trunc(assetFamilyCode, 26)}</text>
-  <rect x="716" y="118" width="252" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
-  <text x="736" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">PROCESSED AT</text>
-  <text x="736" y="167" font-family="'Inter',system-ui,sans-serif" font-size="13" font-weight="500" fill="#26215C">${dateStr}</text>
-  <text x="736" y="185" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">UTC</text>
-  <rect x="32" y="222" width="936" height="0.5" fill="#D3D1C7"/>
-  <text x="32" y="252" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">ATTRIBUTE PIPELINE</text>
-  ${connectors}
-  ${pillsSvg}
-  <rect x="32" y="322" width="936" height="0.5" fill="#D3D1C7"/>
-  <text x="32" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#B4B2A9">Event </text>
-  <text x="70" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">${trunc(eventType, 44)}</text>
-  <text x="410" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#B4B2A9">  ·  Asset </text>
-  <text x="455" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">${trunc(assetCode, 24)}</text>
-  <text x="632" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#B4B2A9">  ·  Locale </text>
-  <text x="688" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">${locale || 'UNKNOWN'}</text>
-  <text x="968" y="350" font-family="'Inter',system-ui,sans-serif" font-size="10" fill="#B4B2A9" text-anchor="end">Esko Asset Decompactor v2</text>
-</svg>`;
-}
-
-/**
- * Writes the status card SVG to the configured textarea attribute on the product.
- *
- * @param {string} host         PIM host
- * @param {string} token        Bearer token
- * @param {string} productId    Product identifier
- * @param {string} family       Product family code
- * @param {string} attribute    Textarea attribute code
- * @param {string} svgString    SVG markup to store
- */
-async function writeStatusCard(host, token, productId, family, attribute, svgString) {
-  const LIMIT = 65535;
-  if (svgString.length > LIMIT) {
-    console.warn(`  Status card SVG (${svgString.length} chars) exceeds limit — skipping.`);
-    return;
-  }
-  const url  = `${host}/api/rest/v1/products/${encodeURIComponent(productId)}`;
-  const body = {
-    identifier: productId,
-    family,
-    values: { [attribute]: [{ locale: null, scope: null, data: svgString }] },
-  };
-  await akFetch('PATCH', url, token, body);
-  console.log(`  Status card written to attribute "${attribute}" (${svgString.length} chars).`);
-}
 
 // ---------------------------------------------------------------------------
 // Temp directory helpers
@@ -1367,27 +1207,7 @@ exports.processArtworkAsset = async (req, res) => {
       cfg.mediaAssetFamily, productId, cfg.mediaAssetProductRefAttr
     );
 
-    // ── 15. Generate and write status card SVG ────────────────────────────
-    const svgCard = generateStatusCard({
-      uniqueId:         cfg.statusCardAttribute,
-      productId,
-      action,
-      sourceFile:       filename,
-      processedAt:      new Date().toISOString(),
-      assetFamilyCode:  cfg.mediaAssetFamily,
-      mediaUploaded:    mediaResult.uploaded,
-      mediaTotal:       mediaResult.total,
-      gs1Attribute:     cfg.gs1Attribute,
-      gs1RawAttr:       cfg.gs1RawXmlAttribute,
-      flagAttribute:    cfg.gs1ProcessedFlag,
-      statusAttribute:  cfg.statusCardAttribute,
-      assetCode:        `${assetFamilyCode}/${assetCode}`,
-      eventType:        EXPECTED_EVENT_TYPE,
-      locale:           payload._meta?.locale || 'UNKNOWN',
-    });
-    await writeStatusCard(cfg.host, token, productId, cfg.productFamily, cfg.statusCardAttribute, svgCard);
-
-    // ── 16. Respond ───────────────────────────────────────────────────────
+    // ── 15. Respond ───────────────────────────────────────────────────────
     return res.status(200).json({
       status:            'processed',
       productIdentifier: productId,
@@ -1397,7 +1217,6 @@ exports.processArtworkAsset = async (req, res) => {
       rawXmlAttribute:   cfg.gs1RawXmlAttribute,
       rawXmlStored:      xmlResult.stored,
       ...(xmlResult.stored === false && { rawXmlSkippedReason: xmlResult.reason }),
-      statusCardAttribute: cfg.statusCardAttribute,
       mediaAssets: {
         assetFamily:  cfg.mediaAssetFamily,
         total:        mediaResult.total,
