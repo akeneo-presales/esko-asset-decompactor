@@ -1354,7 +1354,7 @@ exports.processArtworkAsset = async (req, res) => {
       flagAttribute:    cfg.gs1ProcessedFlag,
       statusAttribute:  cfg.statusCardAttribute,
       assetCode:        `${assetFamilyCode}/${assetCode}`,
-      eventType,
+      eventType:        EXPECTED_EVENT_TYPE,
       locale:           payload._meta?.locale || 'UNKNOWN',
     });
     await writeStatusCard(cfg.host, token, productId, cfg.productFamily, cfg.statusCardAttribute, svgCard);
