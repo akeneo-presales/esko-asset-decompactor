@@ -551,6 +551,12 @@ The asset family (`product_images`) must also have:
 
 ---
 
+## SVG status card — example
+
+The card below is a real example of what gets written to `AKENEO_STATUS_CARD_ATTRIBUTE` on the product page after a successful run:
+
+![Akeneo status card example](status-card-example.svg)
+
 ## Notes
 
 - **Idempotency** — re-processing the same ZIP overwrites all attributes with

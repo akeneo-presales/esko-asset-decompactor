@@ -1,0 +1,56 @@
+<svg width="1000" height="370" viewBox="0 0 1000 370" xmlns="http://www.w3.org/2000/svg" uniqueID="akeneo_status_card">
+  <rect width="1000" height="370" rx="12" fill="#F8F7F5"/>
+  <rect x="0" y="0" width="6" height="370" rx="3" fill="#4B49D1"/>
+  <rect x="3" y="0" width="3" height="370" fill="#4B49D1"/>
+  <rect x="32" y="28" width="48" height="48" rx="12" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="1"/>
+  <path d="M49 52 L54 57 L63 47" fill="none" stroke="#534AB7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="56" cy="52" r="10" fill="none" stroke="#534AB7" stroke-width="2"/>
+  <text x="96" y="50" font-family="'Inter',system-ui,sans-serif" font-size="18" font-weight="600" fill="#26215C">Product successfully processed</text>
+  <text x="96" y="70" font-family="'Inter',system-ui,sans-serif" font-size="13" fill="#888780">Esko ZIP archive decoded and enriched — all assets imported</text>
+  <rect x="32" y="98" width="936" height="0.5" fill="#D3D1C7"/>
+  <rect x="32" y="118" width="212" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+  <text x="52" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">PRODUCT</text>
+  <text x="52" y="167" font-family="'Inter',system-ui,sans-serif" font-size="15" font-weight="600" fill="#26215C">Display_2025</text>
+  <rect x="52" y="176" width="64" height="16" rx="8" fill="#EAF3DE" stroke="#97C459" stroke-width="0.5"/>
+  <circle cx="63" cy="184" r="4" fill="#3B6D11"/>
+  <text x="70" y="188" font-family="'Inter',system-ui,sans-serif" font-size="10" font-weight="500" fill="#27500A">created</text>
+  <rect x="260" y="118" width="212" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+  <text x="280" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">SOURCE FILE</text>
+  <text x="280" y="167" font-family="'Inter',system-ui,sans-serif" font-size="12" font-weight="500" fill="#26215C">LSP_2600014_001_1_language_…</text>
+  <text x="280" y="185" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">GS1 artwork content v3</text>
+  <rect x="488" y="118" width="212" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+  <text x="508" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">MEDIA ASSETS</text>
+  <text x="508" y="167" font-family="'Inter',system-ui,sans-serif" font-size="22" font-weight="600" fill="#26215C">27</text>
+  <text x="536" y="167" font-family="'Inter',system-ui,sans-serif" font-size="13" fill="#639922"> / 29 uploaded</text>
+  <text x="508" y="185" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">product_images</text>
+  <rect x="716" y="118" width="252" height="80" rx="8" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
+  <text x="736" y="144" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">PROCESSED AT</text>
+  <text x="736" y="167" font-family="'Inter',system-ui,sans-serif" font-size="13" font-weight="500" fill="#26215C">26 May 2026, 07:39</text>
+  <text x="736" y="185" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">UTC</text>
+  <rect x="32" y="222" width="936" height="0.5" fill="#D3D1C7"/>
+  <text x="32" y="252" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#888780" letter-spacing="0.06em">ATTRIBUTE PIPELINE</text>
+  <line x1="225" y1="278" x2="243" y2="278" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="366" y1="278" x2="384" y2="278" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="3 2"/>
+<line x1="586" y1="278" x2="604" y2="278" stroke="#AFA9EC" stroke-width="1" stroke-dasharray="3 2"/>
+  <rect x="32" y="264" width="191" height="28" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+<circle cx="47" cy="278" r="5" fill="#534AB7"/>
+<text x="56" y="282" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#3C3489">gs1_attributes_values</text>
+<rect x="245" y="264" width="119" height="28" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+<circle cx="260" cy="278" r="5" fill="#534AB7"/>
+<text x="269" y="282" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#3C3489">gs1_raw_xml</text>
+<rect x="386" y="264" width="198" height="28" rx="6" fill="#EAF3DE" stroke="#97C459" stroke-width="0.5"/>
+<circle cx="401" cy="278" r="5" fill="#3B6D11"/>
+<text x="410" y="282" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#27500A">AI_Process_GS1_conten…</text>
+<rect x="606" y="264" width="169" height="28" rx="6" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+<circle cx="621" cy="278" r="5" fill="#534AB7"/>
+<text x="630" y="282" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="500" fill="#3C3489">akeneo_status_card</text>
+
+  <rect x="32" y="322" width="936" height="0.5" fill="#D3D1C7"/>
+  <text x="32" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#B4B2A9">Event </text>
+  <text x="70" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">com.akeneo.pim.v1.asset.updated.delta</text>
+  <text x="410" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#B4B2A9">  ·  Asset </text>
+  <text x="455" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">eskozipfiles / test1</text>
+  <text x="632" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#B4B2A9">  ·  Locale </text>
+  <text x="688" y="350" font-family="'Inter',system-ui,sans-serif" font-size="11" fill="#888780">en_US</text>
+  <text x="968" y="350" font-family="'Inter',system-ui,sans-serif" font-size="10" fill="#B4B2A9" text-anchor="end">Esko Asset Decompactor v2</text>
+</svg>
