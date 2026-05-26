@@ -756,23 +756,12 @@ async function uploadAssetMediaFile(host, token, filePath, productId) {
     throw new Error(`Asset media upload failed for "${filename}" (${res.status}): ${text}`);
   }
 
-  // Log all response headers to diagnose what Akeneo actually returns
-  const allHeaders = {};
-  res.headers.forEach((val, key) => { allHeaders[key] = val; });
-  console.log(`  Upload response status: ${res.status}`);
-  console.log(`  Upload response headers: ${JSON.stringify(allHeaders)}`);
-
-  // Read body in case the path is in it rather than the Location header
-  const responseBody = await res.text();
-  console.log(`  Upload response body: "${responseBody.slice(0, 200)}"`);
-
   // Akeneo returns the storage path in the Location header. The value may be:
   //   - a full URL:  https://host/api/rest/v1/asset-media-files/7/a/2/b/7a2b…_file.jpg
   //   - a path only: /api/rest/v1/asset-media-files/7/a/2/b/7a2b…_file.jpg
   // We want only the storage path segment after the API prefix:
   //   7/a/2/b/7a2b…_file.jpg
   const location = res.headers.get('location') || '';
-  console.log(`  Location header raw value: "${location}"`);
 
   // Extract the pathname whether the header is a full URL or a path
   let pathname;
@@ -784,7 +773,6 @@ async function uploadAssetMediaFile(host, token, filePath, productId) {
   }
 
   const assetPath = pathname.replace(/^\/api\/rest\/v1\/asset-media-files\//, '');
-  console.log(`  Extracted assetPath: "${assetPath}"`);
 
   if (!assetPath || assetPath === pathname) {
     throw new Error(
