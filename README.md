@@ -22,8 +22,8 @@ Akeneo PIM.
 
 ## Environment variables
 
-All variables are required. Missing any one causes the function to return 500
-immediately.
+Required variables are listed below. `AKENEO_ASSET_FAMILY_FILTER` is optional.
+Missing any required variable causes the function to return 500 immediately.
 
 | Variable | Description | Example |
 |---|---|---|
@@ -40,7 +40,7 @@ immediately.
 | `AKENEO_GS1_PROCESSED_FLAG` | Product boolean attribute set to `true` after a successful run | `AI_Process_GS1_contents_` |
 | `AKENEO_MEDIA_ASSET_FAMILY` | Asset family code where extracted media files are uploaded | `product_images` |
 | `AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE` | Asset attribute code that holds the product reference (used by the product link rule) | `product_ref` |
-| `AKENEO_STATUS_CARD_ATTRIBUTE` | Product textarea attribute for the SVG status card | `akeneo_status_card` |
+| `AKENEO_ASSET_FAMILY_FILTER` | *(optional)* Comma-separated list of asset family codes to process — events from other families are skipped | `eskozipfiles,artwork_assets` |
 
 ---
 
@@ -100,6 +100,8 @@ Proceeds only when **all** of the following are true:
 | Wrong event type | 200 skipped |
 | Watched attribute not in delta | 200 skipped |
 | New value is null/empty (file removed) | 200 skipped |
+| New file is not a `.zip` (PDF, image…) | 200 skipped |
+| Asset family not in `AKENEO_ASSET_FAMILY_FILTER` (when set) | 200 skipped |
 
 All skip cases return `200` (or `401`) to prevent the Event Platform from
 retrying with the same payload.
@@ -125,6 +127,16 @@ Step 2 & 3 — Parse & validate CloudEvent
 Step 4 — Inspect media attribute delta
     ├── Not changed / null → 200 skipped
     └── New file path present → continue
+    │
+    ▼
+Step 4a — Asset family filter (optional)
+    ├── Family not in AKENEO_ASSET_FAMILY_FILTER → 200 skipped
+    └── Allowed (or no filter set) → continue
+    │
+    ▼
+Step 4b — ZIP file guard
+    ├── File extension is not .zip → 200 skipped
+    └── Is a .zip → continue
     │
     ▼
 Step 5 — Authenticate (OAuth2 password grant)
@@ -175,11 +187,7 @@ Step 14 — Upload media files to asset family
          → product_ref = productId
     │
     ▼
-Step 15 — Generate & write SVG status card
-  generateStatusCard() → PATCH → akeneo_status_card
-    │
-    ▼
-Step 16 — Cleanup /tmp/ + return 200 response
+Step 15 — Cleanup /tmp/ + return 200 response
 ```
 
 ---
@@ -327,28 +335,6 @@ links uploaded assets to products via the `product_ref` attribute:
 
 Apply via `PATCH /api/rest/v1/asset-families/{family_code}`.
 
----
-
-## SVG status card
-
-After all writes succeed, the function generates a **1000×370px standalone
-SVG** status card and stores it in `AKENEO_STATUS_CARD_ATTRIBUTE`.
-
-The card displays:
-- Product identifier + created/updated badge
-- Source XML filename
-- Number of media files uploaded / total found
-- Processing timestamp (UTC)
-- Attribute pipeline strip (all 4 attributes written)
-- Event metadata footer (event type, asset code, locale)
-
-The root `<svg>` element carries a `uniqueID` attribute set to the value of
-`AKENEO_STATUS_CARD_ATTRIBUTE`. The SVG uses only inline attributes and system
-fonts — no external dependencies — so it renders correctly inside Akeneo's
-product page textarea preview.
-
-The card is typically 3–4 KB and is skipped with a warning if it somehow
-exceeds 65535 characters.
 
 ---
 
@@ -378,7 +364,6 @@ Every incoming request is verified before any processing:
   "rawXmlAttribute": "gs1_raw_xml",
   "rawXmlStored": false,
   "rawXmlSkippedReason": "too_large",
-  "statusCardAttribute": "akeneo_status_card",
   "mediaAssets": {
     "assetFamily": "product_images",
     "total": 29,
@@ -442,7 +427,7 @@ export AKENEO_GS1_RAW_XML_ATTRIBUTE=gs1_raw_xml
 export AKENEO_GS1_PROCESSED_FLAG=AI_Process_GS1_contents_
 export AKENEO_MEDIA_ASSET_FAMILY=product_images
 export AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE=product_ref
-export AKENEO_STATUS_CARD_ATTRIBUTE=akeneo_status_card
+export AKENEO_ASSET_FAMILY_FILTER=eskozipfiles  # optional
 ```
 
 ### Run test scenarios
@@ -505,8 +490,8 @@ gcloud run deploy esko-asset-decompactor \
     AKENEO_GS1_RAW_XML_ATTRIBUTE=gs1_raw_xml,\
     AKENEO_GS1_PROCESSED_FLAG=AI_Process_GS1_contents_,\
     AKENEO_MEDIA_ASSET_FAMILY=product_images,\
-    AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE=product_ref,\
-    AKENEO_STATUS_CARD_ATTRIBUTE=akeneo_status_card
+    AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE=product_ref
+    # AKENEO_ASSET_FAMILY_FILTER=eskozipfiles  # optional
 ```
 
 > **Production recommendation:** store secrets in **Google Secret Manager**
@@ -540,7 +525,6 @@ assigned to the product family before running.
 | `gs1_attributes_values` | Text area | No | No | Stores minified GS1 JSON |
 | `gs1_raw_xml` | Text area | No | No | Stores minified raw XML |
 | `AI_Process_GS1_contents_` | Boolean (Yes/No) | No | No | Processing flag |
-| `akeneo_status_card` | Text area | No | No | SVG status card HTML |
 
 The asset family (`product_images`) must also have:
 
@@ -550,12 +534,6 @@ The asset family (`product_images`) must also have:
 | `attribute_as_main_media` | Media file | Must be set on the family — the function reads this dynamically |
 
 ---
-
-## SVG status card — example
-
-The card below is a real example of what gets written to `AKENEO_STATUS_CARD_ATTRIBUTE` on the product page after a successful run:
-
-![Akeneo status card example](status-card-example.svg)
 
 ## Notes
 
