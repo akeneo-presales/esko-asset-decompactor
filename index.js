@@ -146,6 +146,15 @@ function getConfig() {
   if (missing.length) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
+
+  // Optional: comma-separated list of asset family codes to process.
+  // When set, events from other families are silently skipped with 200.
+  // e.g. "eskozipfiles,artwork_assets"
+  const familyFilterRaw = process.env.AKENEO_ASSET_FAMILY_FILTER || '';
+  const assetFamilyFilter = familyFilterRaw
+    ? new Set(familyFilterRaw.split(',').map(s => s.trim()).filter(Boolean))
+    : null;
+
   return {
     host:                       process.env.AKENEO_HOST.replace(/\/$/, ''),
     clientId:                   process.env.AKENEO_CLIENT_ID,
@@ -161,6 +170,7 @@ function getConfig() {
     mediaAssetFamily:           process.env.AKENEO_MEDIA_ASSET_FAMILY,
     mediaAssetProductRefAttr:   process.env.AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE,
     statusCardAttribute:        process.env.AKENEO_STATUS_CARD_ATTRIBUTE,
+    assetFamilyFilter,          // Set<string> | null
   };
 }
 
@@ -1248,11 +1258,29 @@ exports.processArtworkAsset = async (req, res) => {
       const reason =
         `Attribute "${cfg.mediaAttribute}" did not change or new value is empty — no action needed.`;
       console.log(reason);
-      // Respond 200 so the platform doesn't retry
       return res.status(200).json({ status: 'skipped', reason });
     }
 
     console.log(`Media attribute "${cfg.mediaAttribute}" changed → new file path: ${newFilePath}`);
+
+    // ── 4a. Asset family filter (optional) ───────────────────────────────
+    // When AKENEO_ASSET_FAMILY_FILTER is set, only process events from the
+    // listed asset families — all others are acknowledged and ignored.
+    if (cfg.assetFamilyFilter && !cfg.assetFamilyFilter.has(assetFamilyCode)) {
+      const reason = `Asset family "${assetFamilyCode}" is not in the allowed list `
+        + `[${[...cfg.assetFamilyFilter].join(', ')}] — skipping.`;
+      console.log(reason);
+      return res.status(200).json({ status: 'skipped', reason });
+    }
+
+    // ── 4b. ZIP file guard ────────────────────────────────────────────────
+    // Only process .zip files — other media types (PDF, images…) may be
+    // uploaded to the same attribute but cannot be extracted as archives.
+    if (!/\.zip$/i.test(newFilePath)) {
+      const reason = `New file "${newFilePath}" is not a ZIP archive — skipping.`;
+      console.log(reason);
+      return res.status(200).json({ status: 'skipped', reason });
+    }
 
     // ── 5. Authenticate ───────────────────────────────────────────────────
     const token = await getAccessToken(cfg);
