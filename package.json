@@ -1,0 +1,19 @@
+{
+  "name": "gs1-artwork-processor",
+  "version": "2.0.0",
+  "description": "Google Cloud Function — processes Akeneo asset.updated.delta CloudEvents, parses GS1 artwork XML files from a ZIP and writes structured JSON to a PIM product attribute.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "functions-framework --target=processArtworkAsset",
+    "test": "node test-local.js"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.4.0",
+    "@xmldom/xmldom": "^0.8.10",
+    "adm-zip": "^0.5.10",
+    "node-fetch": "^2.7.0"
+  }
+}
