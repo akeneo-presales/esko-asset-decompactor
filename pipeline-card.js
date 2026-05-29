@@ -133,12 +133,16 @@ class IgnoredEventError extends Error { constructor(m) { super(m); this.name = '
 /**
  * Parses and validates the incoming product.updated.delta CloudEvent.
  *
- * Payload shape:
- *   data.product.identifier   — product SKU
- *   data.product.changes.values — { attrCode: [{ previous, new, locale, channel }] }
+ * Per the official docs (https://api.akeneo.com/event-platform/available-events.html):
+ *
+ *   data.product.uuid        — always present — primary product identifier
+ *   data.product.identifier  — optional — only when send_product_identifier is
+ *                              enabled on the subscription
+ *   data.product.changes.values — { attrCode: [{ previous, new, type, locale, scope }] }
+ *                                 Note: field is "scope", not "channel" (product delta)
  *
  * @param {object} body
- * @returns {{ eventId, eventTime, productIdentifier, changedValues }}
+ * @returns {{ eventId, eventTime, productUuid, productIdentifier, changedValues }}
  */
 function parseCloudEvent(body) {
   if (!body || typeof body !== 'object') {
@@ -156,19 +160,32 @@ function parseCloudEvent(body) {
     throw new ValidationError('CloudEvent data.product is missing.');
   }
 
-  const productIdentifier = data.product.identifier;
-  if (!productIdentifier) {
-    throw new ValidationError('CloudEvent data.product.identifier is missing.');
+  // uuid is the canonical product identifier — always present
+  const productUuid = data.product.uuid;
+  if (!productUuid) {
+    throw new ValidationError('CloudEvent data.product.uuid is missing.');
   }
+
+  // identifier is optional — only present when send_product_identifier is enabled
+  const productIdentifier = data.product.identifier || null;
 
   const changedValues = data.product.changes?.values;
   if (!changedValues || typeof changedValues !== 'object') {
-    throw new ValidationError('CloudEvent data.product.changes.values is missing or not an object.');
+    // changes.values may be absent when only non-value properties changed
+    // (e.g. family, categories, groups) — treat as no relevant change
+    return {
+      eventId:           body.id,
+      eventTime:         body.time,
+      productUuid,
+      productIdentifier,
+      changedValues:     {},
+    };
   }
 
   return {
     eventId:           body.id,
     eventTime:         body.time,
+    productUuid,
     productIdentifier,
     changedValues,
   };
@@ -408,30 +425,32 @@ exports.generatePipelineCard = async (req, res) => {
       return res.status(400).json({ status: 'error', error: err.message });
     }
 
-    const { eventId, eventTime, productIdentifier, changedValues } = parsed;
-    console.log(`[${eventId}] ${EXPECTED_EVENT_TYPE} — product: "${productIdentifier}"`);
+    const { eventId, eventTime, productUuid, productIdentifier, changedValues } = parsed;
+    console.log(`[${eventId}] ${EXPECTED_EVENT_TYPE} — uuid: "${productUuid}" identifier: "${productIdentifier || 'n/a'}"`);
 
     // ── 3. Check whether any pipeline step attribute changed ──────────────
-    // Only trigger when one of the 5 step boolean attrs has a previous → new
-    // value difference. Unrelated attribute changes (including name) are ignored.
     if (!hasPipelineChange(changedValues, cfg.stepAttrs)) {
-      const reason = `No pipeline step attribute changed on "${productIdentifier}" — skipping.`;
+      const reason = `No pipeline step attribute changed on "${productUuid}" — skipping.`;
       console.log(reason);
       return res.status(200).json({ status: 'skipped', reason });
     }
-    console.log(`Pipeline attribute change detected on "${productIdentifier}" — regenerating card.`);
+    console.log(`Pipeline attribute change detected — regenerating card.`);
 
     // ── 4. Authenticate ───────────────────────────────────────────────────
     const token = await getAccessToken(cfg);
     console.log('Authenticated with Akeneo.');
 
     // ── 5. Fetch current product values ───────────────────────────────────
-    const values = await fetchProductValues(cfg.host, token, productIdentifier);
+    // Prefer fetching by identifier (SKU) when available — the REST API
+    // supports both /products/{identifier} and /products/{uuid}.
+    // uuid is always available; identifier is optional (requires
+    // send_product_identifier to be enabled on the subscription).
+    const productKey = productIdentifier || productUuid;
+    const values = await fetchProductValues(cfg.host, token, productKey);
 
-    const productName = readValue(values, cfg.productNameAttr) || productIdentifier;
+    const productName = readValue(values, cfg.productNameAttr) || productIdentifier || productUuid;
     const steps = cfg.stepAttrs.map(attr => {
       const v = readValue(values, attr);
-      // Strictly evaluate: only boolean true counts as done
       return v === true ? true : null;
     });
 
@@ -439,16 +458,21 @@ exports.generatePipelineCard = async (req, res) => {
     console.log(`Product: "${productName}" | Pipeline: ${pipelineDone}/5 steps done`);
 
     // ── 6. Generate SVG card ──────────────────────────────────────────────
-    const svgCard = generatePipelineCard({ identifier: productIdentifier, productName, steps });
+    const svgCard = generatePipelineCard({
+      identifier:  productIdentifier || productUuid,
+      productName,
+      steps,
+    });
     console.log(`SVG card generated (${svgCard.length} chars).`);
 
     // ── 7. Write to product attribute ─────────────────────────────────────
-    await writePipelineCard(cfg.host, token, productIdentifier, cfg.cardAttribute, svgCard);
+    await writePipelineCard(cfg.host, token, productKey, cfg.cardAttribute, svgCard);
 
     // ── 8. Respond ────────────────────────────────────────────────────────
     return res.status(200).json({
       status:            'processed',
-      productIdentifier,
+      productUuid,
+      productIdentifier: productIdentifier || null,
       pipelineDone,
       cardAttribute:     cfg.cardAttribute,
     });
