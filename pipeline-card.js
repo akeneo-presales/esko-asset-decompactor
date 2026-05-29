@@ -252,7 +252,7 @@ async function getAccessToken(cfg) {
  * @returns {Promise<object>}  Akeneo product values: { attrCode: [{ data, locale, scope }] }
  */
 async function fetchProductValues(host, token, productUuid) {
-  const url = `${host}/api/rest/v1/products/${encodeURIComponent(productUuid)}?with_attribute_options=false`;
+  const url = `${host}/api/rest/v1/products-uuid/${encodeURIComponent(productUuid)}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`Failed to fetch product "${productUuid}" (${res.status}): ${await res.text()}`);
   const product = await res.json();
@@ -284,14 +284,13 @@ function readValue(values, attrCode) {
  * @param {string} attribute
  * @param {string} svgString
  */
-async function writePipelineCard(host, token, productIdentifier, attribute, svgString) {
+async function writePipelineCard(host, token, productUuid, attribute, svgString) {
   const LIMIT = 65535;
   if (svgString.length > LIMIT) {
     throw new Error(`Pipeline card SVG (${svgString.length} chars) exceeds Akeneo's ${LIMIT}-char textarea limit.`);
   }
-  const url  = `${host}/api/rest/v1/products/${encodeURIComponent(productIdentifier)}`;
+  const url  = `${host}/api/rest/v1/products-uuid/${encodeURIComponent(productUuid)}`;
   const body = {
-    identifier: productIdentifier,
     values: { [attribute]: [{ locale: null, scope: null, data: svgString }] },
   };
   const res = await fetch(url, {
@@ -302,7 +301,7 @@ async function writePipelineCard(host, token, productIdentifier, attribute, svgS
   if (!res.ok) {
     throw new Error(`Failed to write pipeline card (${res.status}): ${await res.text()}`);
   }
-  console.log(`  Pipeline card written to "${attribute}" on product "${productIdentifier}" (${svgString.length} chars).`);
+  console.log(`  Pipeline card written to "${attribute}" on product "${productUuid}" (${svgString.length} chars).`);
 }
 
 // ---------------------------------------------------------------------------
