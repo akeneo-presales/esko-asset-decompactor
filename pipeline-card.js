@@ -324,14 +324,19 @@ async function fetchProductWithCompleteness(host, token, productUuid) {
 }
 
 /**
- * Returns the highest completeness ratio across all locales for a channel,
- * or null if the channel is absent from the completenesses array.
+ * Returns the highest completeness ratio across all locales for a channel.
+ *
+ * The /products-uuid endpoint returns completenesses with shape:
+ *   { scope: "distri_and_retailers", locale: "en_US", data: 56 }
+ * (fields are "scope" and "data", not "channel" and "ratio")
+ *
+ * Returns null if the channel is absent from the array.
  */
 function getChannelCompleteness(completenesses, channel) {
   if (!Array.isArray(completenesses)) return null;
-  const entries = completenesses.filter(c => c.channel === channel);
+  const entries = completenesses.filter(c => c.scope === channel);
   if (!entries.length) return null;
-  return Math.max(...entries.map(c => c.ratio ?? 0));
+  return Math.max(...entries.map(c => c.data ?? 0));
 }
 
 // ---------------------------------------------------------------------------
