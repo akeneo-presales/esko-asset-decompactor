@@ -339,6 +339,22 @@ function getChannelCompleteness(completenesses, channel) {
   return Math.max(...entries.map(c => c.data ?? 0));
 }
 
+/**
+ * Returns the locale with the highest completeness for the given channel.
+ * Falls back to the first locale found, or 'en_US' if none.
+ *
+ * @param {Array}  completenesses
+ * @param {string} channel
+ * @returns {string}
+ */
+function getBestLocale(completenesses, channel) {
+  if (!Array.isArray(completenesses)) return 'en_US';
+  const entries = completenesses
+    .filter(c => c.scope === channel && c.locale)
+    .sort((a, b) => (b.data ?? 0) - (a.data ?? 0));
+  return entries[0]?.locale || 'en_US';
+}
+
 // ---------------------------------------------------------------------------
 // PDF fact sheet generator
 // ---------------------------------------------------------------------------
@@ -457,7 +473,7 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
  */
 async function uploadAndAssignFactSheet(
   host, token, productUuid, productName,
-  pdfAssetFamily, pdfAssetCollectionAttr, mainMediaAttr, pdfBuffer
+  pdfAssetFamily, pdfAssetCollectionAttr, mainMediaAttr, pdfBuffer, locale
 ) {
   // Deterministic asset code
   const sanitised = (productName || productUuid)
@@ -513,8 +529,11 @@ async function uploadAndAssignFactSheet(
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!productRes.ok) throw new Error(`Re-fetch for asset assignment failed (${productRes.status})`);
-  const product       = await productRes.json();
-  const existing      = product.values?.[pdfAssetCollectionAttr]?.[0]?.data || [];
+  const product  = await productRes.json();
+  const allEntries = product.values?.[pdfAssetCollectionAttr] || [];
+  // Find the entry matching our locale (or fall back to first entry)
+  const matchingEntry = allEntries.find(e => e.locale === locale) || allEntries[0];
+  const existing      = matchingEntry?.data || [];
   const newCodes      = existing.includes(assetCode) ? existing : [...existing, assetCode];
 
   const patchRes = await fetch(
@@ -522,7 +541,7 @@ async function uploadAndAssignFactSheet(
     {
       method:  'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ values: { [pdfAssetCollectionAttr]: [{ locale: null, scope: null, data: newCodes }] } }),
+      body:    JSON.stringify({ values: { [pdfAssetCollectionAttr]: [{ locale, scope: null, data: newCodes }] } }),
     }
   );
   if (!patchRes.ok) throw new Error(`Asset collection PATCH failed (${patchRes.status}): ${await patchRes.text()}`);
@@ -726,11 +745,15 @@ exports.generatePipelineCard = async (req, res) => {
         });
         console.log(`PDF generated (${pdfBuffer.length} bytes).`);
 
+        // Pick the locale with the highest completeness on this channel
+        const bestLocale = getBestLocale(fullProduct.completenesses, cfg.completenessChannel);
+        console.log(`Using locale "${bestLocale}" for asset collection assignment.`);
+
         const assetCode = await uploadAndAssignFactSheet(
           cfg.host, token, productUuid, productName,
-          cfg.pdfAssetFamily, cfg.pdfAssetCollectionAttr, mainMediaAttr, pdfBuffer
+          cfg.pdfAssetFamily, cfg.pdfAssetCollectionAttr, mainMediaAttr, pdfBuffer, bestLocale
         );
-        pdfResult = { generated: true, assetCode, completeness };
+        pdfResult = { generated: true, assetCode, completeness, locale: bestLocale };
       } else {
         const reason = completeness === null
           ? `Channel "${cfg.completenessChannel}" not found in completenesses`
@@ -763,3 +786,4 @@ exports.generatePipelineCard = async (req, res) => {
 // Export pure functions for testing
 module.exports.generateFactSheetPdf    = generateFactSheetPdf;
 module.exports.getChannelCompleteness  = getChannelCompleteness;
+module.exports.getBestLocale           = getBestLocale;
