@@ -175,17 +175,33 @@ function parseCloudEvent(body) {
 }
 
 /**
- * Returns true when at least one of the 5 pipeline step attributes
- * (or the product name attribute) appears in the changed values delta.
+ * Returns true when at least one of the 5 pipeline step attributes has a
+ * meaningful change in the delta — i.e. the attribute is in changedValues
+ * AND at least one of its entries has a `previous` value that differs from
+ * its `new` value.
+ *
+ * The product name attribute is intentionally excluded: a product name change
+ * alone should not trigger a card regeneration.
+ *
+ * The delta entry shape per attribute:
+ *   changedValues[attrCode] = [
+ *     { previous: true|false|null, new: true|false|null, locale: null, channel: null }
+ *   ]
  *
  * @param {object}   changedValues  data.product.changes.values from the event
- * @param {string[]} stepAttrs      The 5 step attribute codes
- * @param {string}   nameAttr       The product name attribute code
+ * @param {string[]} stepAttrs      The 5 pipeline step attribute codes
  * @returns {boolean}
  */
-function hasPipelineChange(changedValues, stepAttrs, nameAttr) {
-  const watched = new Set([...stepAttrs, nameAttr]);
-  return Object.keys(changedValues).some(k => watched.has(k));
+function hasPipelineChange(changedValues, stepAttrs) {
+  for (const attr of stepAttrs) {
+    const entries = changedValues[attr];
+    if (!Array.isArray(entries)) continue;
+
+    // At least one entry must have a genuinely different previous → new value
+    const hasRealChange = entries.some(entry => entry.previous !== entry.new);
+    if (hasRealChange) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,9 +411,11 @@ exports.generatePipelineCard = async (req, res) => {
     const { eventId, eventTime, productIdentifier, changedValues } = parsed;
     console.log(`[${eventId}] ${EXPECTED_EVENT_TYPE} — product: "${productIdentifier}"`);
 
-    // ── 3. Check whether any pipeline attribute changed ───────────────────
-    if (!hasPipelineChange(changedValues, cfg.stepAttrs, cfg.productNameAttr)) {
-      const reason = `None of the watched pipeline attributes changed on "${productIdentifier}" — skipping.`;
+    // ── 3. Check whether any pipeline step attribute changed ──────────────
+    // Only trigger when one of the 5 step boolean attrs has a previous → new
+    // value difference. Unrelated attribute changes (including name) are ignored.
+    if (!hasPipelineChange(changedValues, cfg.stepAttrs)) {
+      const reason = `No pipeline step attribute changed on "${productIdentifier}" — skipping.`;
       console.log(reason);
       return res.status(200).json({ status: 'skipped', reason });
     }
