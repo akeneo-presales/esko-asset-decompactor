@@ -239,17 +239,22 @@ async function getAccessToken(cfg) {
 }
 
 /**
- * Fetches a product record and returns its values map.
+ * Fetches a product record by UUID and returns its values map.
+ *
+ * Uses the UUID-based endpoint which is always available regardless of
+ * whether send_product_identifier is enabled on the subscription.
+ * The identifier-based endpoint (/products/{identifier}) does not accept
+ * UUIDs and returns 404 when passed one.
  *
  * @param {string} host
  * @param {string} token
- * @param {string} productIdentifier
+ * @param {string} productUuid
  * @returns {Promise<object>}  Akeneo product values: { attrCode: [{ data, locale, scope }] }
  */
-async function fetchProductValues(host, token, productIdentifier) {
-  const url = `${host}/api/rest/v1/products/${encodeURIComponent(productIdentifier)}`;
+async function fetchProductValues(host, token, productUuid) {
+  const url = `${host}/api/rest/v1/products/${encodeURIComponent(productUuid)}?with_attribute_options=false`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`Failed to fetch product "${productIdentifier}" (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw new Error(`Failed to fetch product "${productUuid}" (${res.status}): ${await res.text()}`);
   const product = await res.json();
   return product.values || {};
 }
@@ -441,12 +446,9 @@ exports.generatePipelineCard = async (req, res) => {
     console.log('Authenticated with Akeneo.');
 
     // ── 5. Fetch current product values ───────────────────────────────────
-    // Prefer fetching by identifier (SKU) when available — the REST API
-    // supports both /products/{identifier} and /products/{uuid}.
-    // uuid is always available; identifier is optional (requires
-    // send_product_identifier to be enabled on the subscription).
-    const productKey = productIdentifier || productUuid;
-    const values = await fetchProductValues(cfg.host, token, productKey);
+    // Always fetch by UUID — the identifier is optional and absent when
+    // send_product_identifier is not enabled on the subscription.
+    const values = await fetchProductValues(cfg.host, token, productUuid);
 
     const productName = readValue(values, cfg.productNameAttr) || productIdentifier || productUuid;
     const steps = cfg.stepAttrs.map(attr => {
@@ -466,7 +468,8 @@ exports.generatePipelineCard = async (req, res) => {
     console.log(`SVG card generated (${svgCard.length} chars).`);
 
     // ── 7. Write to product attribute ─────────────────────────────────────
-    await writePipelineCard(cfg.host, token, productKey, cfg.cardAttribute, svgCard);
+    // Write using UUID — consistent with how we fetched
+    await writePipelineCard(cfg.host, token, productUuid, cfg.cardAttribute, svgCard);
 
     // ── 8. Respond ────────────────────────────────────────────────────────
     return res.status(200).json({
