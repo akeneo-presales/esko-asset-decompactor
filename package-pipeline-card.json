@@ -1,0 +1,18 @@
+{
+  "name": "esko-pipeline-card",
+  "version": "2.0.0",
+  "description": "Google Cloud Run Function — generates an SVG enrichment pipeline card and a PDF fact sheet on Akeneo product.updated.delta events.",
+  "main": "pipeline-card.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "functions-framework --target=generatePipelineCard",
+    "test": "node test-local.js"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.4.0",
+    "node-fetch": "^2.7.0",
+    "pdfkit": "^0.15.0"
+  }
+}

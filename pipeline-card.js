@@ -3,43 +3,41 @@
  *
  * Triggered by a com.akeneo.pim.v1.product.updated.delta CloudEvent.
  *
- * When any of the 5 pipeline boolean attributes changes on a product,
- * the function regenerates an SVG enrichment pipeline status card and
- * writes it to a configured textarea attribute on that product.
- *
- * Flow:
- *   1. Verify HMAC-SHA256 signature (X-AKENEO-SIGNATURE-PRIMARY)
- *   2. Parse & validate the CloudEvent
- *   3. Check whether any watched pipeline attribute changed in the delta
- *   4. Authenticate against Akeneo (OAuth2 password grant)
- *   5. Fetch the full product record to read current attribute values
- *   6. Generate the SVG card from current values
- *   7. Write the SVG to the configured textarea attribute
+ * When any of the 5 pipeline boolean attributes changes on a product:
+ *   1. Regenerates an SVG enrichment pipeline status card
+ *   2. Checks completeness on the distri_and_retailers channel — if ≥ 50%,
+ *      generates a commercial PDF fact sheet, uploads it to a PDF asset family
+ *      and assigns it to the Product_Fact_Sheet_PDF asset collection attribute
  *
  * Environment variables (all required):
- *   AKENEO_HOST                    PIM base URL (no trailing slash)
- *   AKENEO_CLIENT_ID               OAuth2 client ID
- *   AKENEO_CLIENT_SECRET           OAuth2 client secret
- *   AKENEO_USERNAME                PIM user login
- *   AKENEO_PASSWORD                PIM user password
- *   AKENEO_WEBHOOK_SECRET          HMAC-SHA256 secret for signature verification
- *   AKENEO_PIPELINE_CARD_ATTRIBUTE Product textarea attribute to write the SVG into
- *   AKENEO_PRODUCT_NAME_ATTRIBUTE  Product text attribute for the product name label
+ *   AKENEO_HOST                        PIM base URL (no trailing slash)
+ *   AKENEO_CLIENT_ID                   OAuth2 client ID
+ *   AKENEO_CLIENT_SECRET               OAuth2 client secret
+ *   AKENEO_USERNAME                    PIM user login
+ *   AKENEO_PASSWORD                    PIM user password
+ *   AKENEO_WEBHOOK_SECRET              HMAC-SHA256 secret for signature verification
+ *   AKENEO_PIPELINE_CARD_ATTRIBUTE     Product textarea attribute for the SVG card
+ *   AKENEO_PRODUCT_NAME_ATTRIBUTE      Product text attribute for the product name label
+ *   AKENEO_PDF_ASSET_FAMILY            Asset family code for PDF fact sheets
+ *   AKENEO_PDF_ASSET_COLLECTION_ATTR   Product asset collection attribute to assign the PDF
  *
  * Optional environment variables:
- *   AKENEO_PIPELINE_STEP_1_ATTR    Attribute code for Step 1 (default: Initial_product_data_received_from_ESKO)
- *   AKENEO_PIPELINE_STEP_2_ATTR    Attribute code for Step 2 (default: AI_Checks___Content_Enrichment_triggered)
- *   AKENEO_PIPELINE_STEP_3_ATTR    Attribute code for Step 3 (default: Final_Legal_Compliance_Approval)
- *   AKENEO_PIPELINE_STEP_4_ATTR    Attribute code for Step 4 (default: Product_Live_on_all_channels)
- *   AKENEO_PIPELINE_STEP_5_ATTR    Attribute code for Step 5 (default: 100_Omnichannel_Readiness)
+ *   AKENEO_COMPLETENESS_CHANNEL        Channel to check completeness on (default: distri_and_retailers)
+ *   AKENEO_COMPLETENESS_THRESHOLD      Minimum completeness % to trigger PDF (default: 50)
+ *   AKENEO_PIPELINE_STEP_1_ATTR        (default: Initial_product_data_received_from_ESKO)
+ *   AKENEO_PIPELINE_STEP_2_ATTR        (default: AI_Checks___Content_Enrichment_triggered)
+ *   AKENEO_PIPELINE_STEP_3_ATTR        (default: Final_Legal_Compliance_Approval)
+ *   AKENEO_PIPELINE_STEP_4_ATTR        (default: Product_Live_on_all_channels)
+ *   AKENEO_PIPELINE_STEP_5_ATTR        (default: 100_Omnichannel_Readiness)
  *
- * Dependencies: @xmldom/xmldom (unused here), node-fetch
+ * Dependencies: node-fetch, pdfkit
  */
 
 'use strict';
 
-const crypto = require('crypto');
-const fetch  = require('node-fetch');
+const crypto      = require('crypto');
+const fetch       = require('node-fetch');
+const PDFDocument = require('pdfkit');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,6 +67,8 @@ function getConfig() {
     'AKENEO_WEBHOOK_SECRET',
     'AKENEO_PIPELINE_CARD_ATTRIBUTE',
     'AKENEO_PRODUCT_NAME_ATTRIBUTE',
+    'AKENEO_PDF_ASSET_FAMILY',
+    'AKENEO_PDF_ASSET_COLLECTION_ATTR',
   ];
   const missing = required.filter(k => !process.env[k]);
   if (missing.length) {
@@ -80,15 +80,19 @@ function getConfig() {
   );
 
   return {
-    host:              process.env.AKENEO_HOST.replace(/\/$/, ''),
-    clientId:          process.env.AKENEO_CLIENT_ID,
-    clientSecret:      process.env.AKENEO_CLIENT_SECRET,
-    username:          process.env.AKENEO_USERNAME,
-    password:          process.env.AKENEO_PASSWORD,
-    webhookSecret:     process.env.AKENEO_WEBHOOK_SECRET,
-    cardAttribute:     process.env.AKENEO_PIPELINE_CARD_ATTRIBUTE,
-    productNameAttr:   process.env.AKENEO_PRODUCT_NAME_ATTRIBUTE,
-    stepAttrs,         // [attr1, attr2, attr3, attr4, attr5]
+    host:                 process.env.AKENEO_HOST.replace(/\/$/, ''),
+    clientId:             process.env.AKENEO_CLIENT_ID,
+    clientSecret:         process.env.AKENEO_CLIENT_SECRET,
+    username:             process.env.AKENEO_USERNAME,
+    password:             process.env.AKENEO_PASSWORD,
+    webhookSecret:        process.env.AKENEO_WEBHOOK_SECRET,
+    cardAttribute:        process.env.AKENEO_PIPELINE_CARD_ATTRIBUTE,
+    productNameAttr:      process.env.AKENEO_PRODUCT_NAME_ATTRIBUTE,
+    pdfAssetFamily:       process.env.AKENEO_PDF_ASSET_FAMILY,
+    pdfAssetCollectionAttr: process.env.AKENEO_PDF_ASSET_COLLECTION_ATTR,
+    completenessChannel:  process.env.AKENEO_COMPLETENESS_CHANNEL   || 'distri_and_retailers',
+    completenessThreshold: parseInt(process.env.AKENEO_COMPLETENESS_THRESHOLD || '50', 10),
+    stepAttrs,
   };
 }
 
@@ -305,6 +309,224 @@ async function writePipelineCard(host, token, productUuid, attribute, svgString)
 }
 
 // ---------------------------------------------------------------------------
+// Completeness helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetches the full product record including completenesses.
+ * completenesses shape: [ { channel, locale, ratio }, … ]
+ */
+async function fetchProductWithCompleteness(host, token, productUuid) {
+  const url = `${host}/api/rest/v1/products-uuid/${encodeURIComponent(productUuid)}?with_completenesses=true`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Failed to fetch product completeness "${productUuid}" (${res.status}): ${await res.text()}`);
+  return res.json();
+}
+
+/**
+ * Returns the highest completeness ratio across all locales for a channel,
+ * or null if the channel is absent from the completenesses array.
+ */
+function getChannelCompleteness(completenesses, channel) {
+  if (!Array.isArray(completenesses)) return null;
+  const entries = completenesses.filter(c => c.channel === channel);
+  if (!entries.length) return null;
+  return Math.max(...entries.map(c => c.ratio ?? 0));
+}
+
+// ---------------------------------------------------------------------------
+// PDF fact sheet generator
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates a commercial product fact sheet PDF from the product's values.
+ * Returns a Buffer containing the PDF binary.
+ *
+ * @param {{
+ *   productUuid:  string,
+ *   productName:  string,
+ *   values:       object,
+ *   completeness: number,
+ *   channel:      string,
+ * }} opts
+ * @returns {Promise<Buffer>}
+ */
+function generateFactSheetPdf({ productUuid, productName, values, completeness, channel }) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const doc    = new PDFDocument({ size: 'A4', margin: 50, info: {
+      Title:   `Product Fact Sheet — ${productName}`,
+      Author:  'Akeneo PIM',
+      Subject: 'Commercial product fact sheet',
+    }});
+
+    doc.on('data',  chunk => chunks.push(chunk));
+    doc.on('end',   ()    => resolve(Buffer.concat(chunks)));
+    doc.on('error', err   => reject(err));
+
+    const W      = doc.page.width - 100;
+    const PURPLE = '#4F46E5';
+    const DARK   = '#1E1B4B';
+    const GREY   = '#6B7280';
+    const GREEN  = '#22C55E';
+    const ORANGE = '#F97316';
+
+    // Header band
+    doc.rect(50, 50, W, 80).fill(PURPLE);
+    doc.fillColor('white').font('Helvetica-Bold').fontSize(20)
+       .text(productName, 66, 66, { width: W - 32, lineBreak: false });
+    doc.font('Helvetica').fontSize(10)
+       .text(`UUID: ${productUuid}`, 66, 94, { width: W - 32 })
+       .text(`Generated: ${new Date().toUTCString()}`, 66, 108, { width: W - 32 });
+    doc.moveDown(4.5);
+
+    // Completeness bar
+    const barY  = doc.y;
+    const fill  = Math.round((completeness / 100) * W);
+    const color = completeness >= 50 ? GREEN : ORANGE;
+    doc.rect(50, barY, W,    18).fill('#E5E7EB');
+    doc.rect(50, barY, fill, 18).fill(color);
+    doc.fillColor(DARK).font('Helvetica-Bold').fontSize(10)
+       .text(`${channel} completeness: ${completeness}%`, 55, barY + 4);
+    doc.moveDown(1.5);
+
+    // Section renderer
+    const renderSection = (title, rows) => {
+      if (!rows.length) return;
+      doc.rect(50, doc.y, W, 20).fill('#F8F7FF');
+      doc.fillColor(PURPLE).font('Helvetica-Bold').fontSize(11)
+         .text(title, 56, doc.y - 16);
+      doc.moveDown(0.3);
+      let alt = false;
+      for (const [key, val] of rows) {
+        if (doc.y > doc.page.height - 100) doc.addPage();
+        const rowY = doc.y;
+        if (alt) doc.rect(50, rowY, W, 18).fill('#F9FAFB');
+        doc.fillColor(GREY).font('Helvetica-Bold').fontSize(9)
+           .text(key, 56, rowY + 4, { width: 180 });
+        doc.fillColor(DARK).font('Helvetica').fontSize(9)
+           .text(String(val).slice(0, 300), 240, rowY + 4, { width: W - 196, lineBreak: false });
+        doc.moveDown(0.85);
+        alt = !alt;
+      }
+      doc.moveDown(0.5);
+    };
+
+    // Collect attributes
+    const globalRows = [], scopedRows = [];
+    for (const [attrCode, entries] of Object.entries(values)) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        const data = entry.data;
+        if (data === null || data === undefined || data === '') continue;
+        let displayVal = Array.isArray(data) ? data.join(', ')
+                       : typeof data === 'object' ? JSON.stringify(data)
+                       : String(data);
+        if (displayVal.length > 400) displayVal = displayVal.slice(0, 397) + '…';
+        const label = (entry.locale || entry.scope)
+          ? `${attrCode} [${[entry.locale, entry.scope].filter(Boolean).join('/')}]`
+          : attrCode;
+        if (!entry.locale && !entry.scope) globalRows.push([attrCode, displayVal]);
+        else                               scopedRows.push([label, displayVal]);
+      }
+    }
+
+    renderSection('Global attributes', globalRows);
+    renderSection('Localised / scoped attributes', scopedRows);
+
+    // Footer
+    const footerY = doc.page.height - 40;
+    doc.rect(50, footerY - 8, W, 0.5).fill('#E5E7EB');
+    doc.fillColor(GREY).font('Helvetica').fontSize(8)
+       .text('Generated by Akeneo PIM · Esko Asset Decompactor', 50, footerY, { align: 'center', width: W });
+
+    doc.end();
+  });
+}
+
+/**
+ * Uploads a PDF buffer, upserts the asset record in the PDF family, then
+ * appends the asset code to the product's asset collection attribute.
+ *
+ * Uses a deterministic asset code so re-runs upsert the same record.
+ */
+async function uploadAndAssignFactSheet(
+  host, token, productUuid, productName,
+  pdfAssetFamily, pdfAssetCollectionAttr, mainMediaAttr, pdfBuffer
+) {
+  // Deterministic asset code
+  const sanitised = (productName || productUuid)
+    .replace(/[^a-zA-Z0-9]/g, '_').replace(/_{2,}/g, '_')
+    .replace(/^_|_$/g, '').slice(0, 40);
+  const uuid8     = productUuid.replace(/-/g, '').slice(0, 8);
+  const assetCode = `fact_sheet_${sanitised}_${uuid8}`.slice(0, 255);
+  const filename  = `${assetCode}.pdf`;
+
+  // 1. Upload binary
+  const boundary = `----FactSheetUpload${Date.now()}`;
+  const header   = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`
+  );
+  const footer   = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const body     = Buffer.concat([header, pdfBuffer, footer]);
+
+  const uploadRes = await fetch(`${host}/api/rest/v1/asset-media-files`, {
+    method:  'POST',
+    headers: {
+      Authorization:    `Bearer ${token}`,
+      'Content-Type':  `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  });
+  if (!uploadRes.ok) throw new Error(`PDF upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
+
+  const location = uploadRes.headers.get('location') || '';
+  let pathname;
+  try { pathname = new URL(location).pathname; } catch { pathname = location; }
+  const assetFilePath = pathname.replace(/^\/api\/rest\/v1\/asset-media-files\//, '');
+  if (!assetFilePath || assetFilePath === pathname)
+    throw new Error(`PDF upload succeeded but could not parse Location header: "${location}"`);
+  console.log(`  PDF uploaded → ${assetFilePath}`);
+
+  // 2. Upsert asset record
+  const assetRes = await fetch(
+    `${host}/api/rest/v1/asset-families/${encodeURIComponent(pdfAssetFamily)}/assets/${encodeURIComponent(assetCode)}`,
+    {
+      method:  'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ code: assetCode, values: { [mainMediaAttr]: [{ locale: null, channel: null, data: assetFilePath }] } }),
+    }
+  );
+  if (assetRes.status !== 201 && assetRes.status !== 204)
+    throw new Error(`Asset record upsert failed (${assetRes.status}): ${await assetRes.text()}`);
+  console.log(`  Asset record "${assetCode}" upserted in family "${pdfAssetFamily}".`);
+
+  // 3. Append asset to product collection (read-modify-write)
+  const productRes = await fetch(
+    `${host}/api/rest/v1/products-uuid/${encodeURIComponent(productUuid)}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!productRes.ok) throw new Error(`Re-fetch for asset assignment failed (${productRes.status})`);
+  const product       = await productRes.json();
+  const existing      = product.values?.[pdfAssetCollectionAttr]?.[0]?.data || [];
+  const newCodes      = existing.includes(assetCode) ? existing : [...existing, assetCode];
+
+  const patchRes = await fetch(
+    `${host}/api/rest/v1/products-uuid/${encodeURIComponent(productUuid)}`,
+    {
+      method:  'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ values: { [pdfAssetCollectionAttr]: [{ locale: null, scope: null, data: newCodes }] } }),
+    }
+  );
+  if (!patchRes.ok) throw new Error(`Asset collection PATCH failed (${patchRes.status}): ${await patchRes.text()}`);
+  console.log(`  Asset "${assetCode}" assigned to "${pdfAssetCollectionAttr}" on "${productUuid}".`);
+
+  return assetCode;
+}
+
+// ---------------------------------------------------------------------------
 // SVG card generator
 // ---------------------------------------------------------------------------
 
@@ -466,17 +688,65 @@ exports.generatePipelineCard = async (req, res) => {
     });
     console.log(`SVG card generated (${svgCard.length} chars).`);
 
-    // ── 7. Write to product attribute ─────────────────────────────────────
-    // Write using UUID — consistent with how we fetched
+    // ── 7. Write SVG card to product attribute ────────────────────────────
     await writePipelineCard(cfg.host, token, productUuid, cfg.cardAttribute, svgCard);
 
-    // ── 8. Respond ────────────────────────────────────────────────────────
+    // ── 8. PDF fact sheet (conditional on channel completeness) ───────────
+    let pdfResult = null;
+    try {
+      const fullProduct  = await fetchProductWithCompleteness(cfg.host, token, productUuid);
+      const completeness = getChannelCompleteness(fullProduct.completenesses, cfg.completenessChannel);
+
+      console.log(`Channel "${cfg.completenessChannel}" completeness: ${completeness ?? 'n/a'}%`);
+
+      if (completeness !== null && completeness >= cfg.completenessThreshold) {
+        console.log(`Completeness ≥ ${cfg.completenessThreshold}% — generating PDF fact sheet…`);
+
+        // Fetch attribute_as_main_media of the PDF asset family
+        const familyRes = await fetch(
+          `${cfg.host}/api/rest/v1/asset-families/${encodeURIComponent(cfg.pdfAssetFamily)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!familyRes.ok) throw new Error(`Failed to fetch PDF asset family (${familyRes.status})`);
+        const family        = await familyRes.json();
+        const mainMediaAttr = family.attribute_as_main_media;
+        if (!mainMediaAttr) throw new Error(`PDF asset family "${cfg.pdfAssetFamily}" has no attribute_as_main_media`);
+
+        const pdfBuffer = await generateFactSheetPdf({
+          productUuid,
+          productName,
+          values:       fullProduct.values || {},
+          completeness,
+          channel:      cfg.completenessChannel,
+        });
+        console.log(`PDF generated (${pdfBuffer.length} bytes).`);
+
+        const assetCode = await uploadAndAssignFactSheet(
+          cfg.host, token, productUuid, productName,
+          cfg.pdfAssetFamily, cfg.pdfAssetCollectionAttr, mainMediaAttr, pdfBuffer
+        );
+        pdfResult = { generated: true, assetCode, completeness };
+      } else {
+        const reason = completeness === null
+          ? `Channel "${cfg.completenessChannel}" not found in completenesses`
+          : `Completeness ${completeness}% < threshold ${cfg.completenessThreshold}%`;
+        console.log(`PDF skipped — ${reason}`);
+        pdfResult = { generated: false, reason, completeness };
+      }
+    } catch (pdfErr) {
+      // PDF failure is non-fatal — SVG card was already written
+      console.error(`PDF fact sheet error (non-fatal): ${pdfErr.message}`);
+      pdfResult = { generated: false, error: pdfErr.message };
+    }
+
+    // ── 9. Respond ────────────────────────────────────────────────────────
     return res.status(200).json({
       status:            'processed',
       productUuid,
       productIdentifier: productIdentifier || null,
       pipelineDone,
       cardAttribute:     cfg.cardAttribute,
+      factSheet:         pdfResult,
     });
 
   } catch (err) {
@@ -484,3 +754,7 @@ exports.generatePipelineCard = async (req, res) => {
     return res.status(500).json({ status: 'error', error: err.message });
   }
 };
+
+// Export pure functions for testing
+module.exports.generateFactSheetPdf    = generateFactSheetPdf;
+module.exports.getChannelCompleteness  = getChannelCompleteness;
