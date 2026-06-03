@@ -368,28 +368,58 @@ function getBestLocale(completenesses, channel) {
  * @param {string} token
  * @returns {Promise<object>}  e.g. { nf_sodium: "Sodium", nf_fat: "Fat", … }
  */
-async function fetchAttributeLabels(host, token) {
-  const labels = {};
-  let nextUrl  = `${host}/api/rest/v1/attributes?limit=100&page=1`;
+/**
+ * Fetches all attribute groups and all attributes, returning a metadata map
+ * used to group, sort and label attributes in the PDF fact sheet.
+ *
+ * @param {string} host
+ * @param {string} token
+ * @returns {Promise<{
+ *   attrMeta:   object,   — { code: { label, group, sortOrder } }
+ *   groupMeta:  object,   — { code: { label, sortOrder } }
+ * }>}
+ */
+async function fetchAttributeMeta(host, token) {
+  const attrMeta  = {};
+  const groupMeta = {};
 
-  while (nextUrl) {
-    const res = await fetch(nextUrl, { headers: { Authorization: `Bearer ${token}` } });
+  // ── 1. Fetch all attribute groups ────────────────────────────────────────
+  let url = `${host}/api/rest/v1/attribute-groups?limit=100`;
+  while (url) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) break;
     const data = await res.json();
-    for (const attr of (data._embedded?.items || [])) {
-      const code = attr.code;
-      const labelEntry = Object.values(attr.labels || {}).find(l => l && l.trim());
-      labels[code] = labelEntry || code;
+    for (const g of (data._embedded?.items || [])) {
+      const label = Object.values(g.labels || {}).find(l => l?.trim()) || g.code;
+      groupMeta[g.code] = { label, sortOrder: g.sort_order ?? 999 };
     }
-    nextUrl = data._links?.next?.href || null;
+    url = data._links?.next?.href || null;
   }
 
-  return labels;
+  // ── 2. Fetch all attributes (paginated) ───────────────────────────────────
+  url = `${host}/api/rest/v1/attributes?limit=100`;
+  while (url) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) break;
+    const data = await res.json();
+    for (const a of (data._embedded?.items || [])) {
+      const label = Object.values(a.labels || {}).find(l => l?.trim()) || a.code;
+      attrMeta[a.code] = {
+        label,
+        group:     a.group     || 'other',
+        sortOrder: a.sort_order ?? 999,
+      };
+    }
+    url = data._links?.next?.href || null;
+  }
+
+  return { attrMeta, groupMeta };
 }
 
 /**
  * Generates a commercial product fact sheet PDF from the product's values.
- * Returns a Buffer containing the PDF binary.
+ * Attributes are grouped by attribute group (sorted by group sort_order),
+ * and within each group by attribute sort_order.
  *
  * @param {{
  *   productUuid:  string,
@@ -397,11 +427,12 @@ async function fetchAttributeLabels(host, token) {
  *   values:       object,
  *   completeness: number,
  *   channel:      string,
- *   labels:       object   — map of attrCode → human-readable label
+ *   attrMeta:     object   — { code: { label, group, sortOrder } }
+ *   groupMeta:    object   — { code: { label, sortOrder } }
  * }} opts
  * @returns {Promise<Buffer>}
  */
-function generateFactSheetPdf({ productUuid, productName, values, completeness, channel, labels = {} }) {
+function generateFactSheetPdf({ productUuid, productName, values, completeness, channel, attrMeta = {}, groupMeta = {} }) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     const doc    = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true, info: {
@@ -523,29 +554,55 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
       doc.y += 8;
     };
 
-    // Collect attributes — remove the 120-char truncation on string values
-    const globalRows = [], scopedRows = [];
+    // ── Collect and group attributes by attribute group ───────────────────
+    // Structure: { groupCode: { global: [[label, val]], scoped: [[label, val]] } }
+    const grouped = {};
+
     for (const [attrCode, entries] of Object.entries(values)) {
       if (EXCLUDED_ATTRS.has(attrCode)) continue;
       if (!Array.isArray(entries)) continue;
+
+      const meta      = attrMeta[attrCode] || { label: attrCode, group: 'other', sortOrder: 999 };
+      const groupCode = meta.group || 'other';
+
+      if (!grouped[groupCode]) grouped[groupCode] = { global: [], scoped: [] };
+
       for (const entry of entries) {
         const raw = entry.data;
         if (raw === null || raw === undefined || raw === '') continue;
         const displayVal = formatValue(raw);
         if (!displayVal) continue;
+
         if (!entry.locale && !entry.scope) {
-          const label = labels[attrCode] || attrCode;
-          globalRows.push([label, displayVal]);
+          grouped[groupCode].global.push({ label: meta.label, val: displayVal, sortOrder: meta.sortOrder });
         } else {
-          const tag   = [entry.locale, entry.scope].filter(Boolean).join(' / ');
-          const label = labels[attrCode] || attrCode;
-          scopedRows.push([`${label}  [${tag}]`, displayVal]);
+          const tag = [entry.locale, entry.scope].filter(Boolean).join(' / ');
+          grouped[groupCode].scoped.push({ label: `${meta.label}  [${tag}]`, val: displayVal, sortOrder: meta.sortOrder });
         }
       }
     }
 
-    renderSection('Product attributes', globalRows);
-    renderSection('Localised / scoped attributes', scopedRows);
+    // Sort each group's rows by attribute sort_order
+    for (const g of Object.values(grouped)) {
+      g.global.sort((a, b) => a.sortOrder - b.sortOrder);
+      g.scoped.sort((a, b) => a.sortOrder - b.sortOrder);
+    }
+
+    // Sort groups by their sort_order, unknown groups go last
+    const sortedGroupCodes = Object.keys(grouped).sort((a, b) => {
+      const sa = groupMeta[a]?.sortOrder ?? 999;
+      const sb = groupMeta[b]?.sortOrder ?? 999;
+      return sa - sb;
+    });
+
+    // Render each group — global attributes first, then localised/scoped
+    for (const groupCode of sortedGroupCodes) {
+      const { global: globalRows, scoped: scopedRows } = grouped[groupCode];
+      const groupLabel = groupMeta[groupCode]?.label || groupCode;
+      const allRows = [...globalRows, ...scopedRows];
+      if (!allRows.length) continue;
+      renderSection(groupLabel, allRows.map(r => [r.label, r.val]));
+    }
 
     // ── Footer — written via raw PDF operators after all content is done ──
     // doc.text() always moves the cursor causing blank overflow pages.
@@ -861,13 +918,15 @@ exports.generatePipelineCard = async (req, res) => {
         const mainMediaAttr = family.attribute_as_main_media;
         if (!mainMediaAttr) throw new Error(`PDF asset family "${cfg.pdfAssetFamily}" has no attribute_as_main_media`);
 
+        const { attrMeta, groupMeta } = await fetchAttributeMeta(cfg.host, token);
         const pdfBuffer = await generateFactSheetPdf({
           productUuid,
           productName,
           values:       fullProduct.values || {},
           completeness,
           channel:      cfg.completenessChannel,
-          labels:       await fetchAttributeLabels(cfg.host, token),
+          attrMeta,
+          groupMeta,
         });
         console.log(`PDF generated (${pdfBuffer.length} bytes).`);
 
@@ -913,3 +972,4 @@ exports.generatePipelineCard = async (req, res) => {
 module.exports.generateFactSheetPdf    = generateFactSheetPdf;
 module.exports.getChannelCompleteness  = getChannelCompleteness;
 module.exports.getBestLocale           = getBestLocale;
+module.exports.fetchAttributeMeta      = fetchAttributeMeta;
