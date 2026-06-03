@@ -375,7 +375,7 @@ function getBestLocale(completenesses, channel) {
 function generateFactSheetPdf({ productUuid, productName, values, completeness, channel }) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    const doc    = new PDFDocument({ size: 'A4', margin: 50, info: {
+    const doc    = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true, info: {
       Title:   `Product Fact Sheet — ${productName}`,
       Author:  'Akeneo PIM',
       Subject: 'Commercial product fact sheet',
@@ -385,82 +385,161 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
     doc.on('end',   ()    => resolve(Buffer.concat(chunks)));
     doc.on('error', err   => reject(err));
 
-    const W      = doc.page.width - 100;
+    const W      = doc.page.width - 100;   // usable width (595 - 100 = 495)
     const PURPLE = '#4F46E5';
     const DARK   = '#1E1B4B';
     const GREY   = '#6B7280';
+    const LGREY  = '#9CA3AF';
     const GREEN  = '#22C55E';
     const ORANGE = '#F97316';
+    const WHITE  = 'white';
 
-    // Header band
-    doc.rect(50, 50, W, 80).fill(PURPLE);
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(20)
-       .text(productName, 66, 66, { width: W - 32, lineBreak: false });
-    doc.font('Helvetica').fontSize(10)
-       .text(`UUID: ${productUuid}`, 66, 94, { width: W - 32 })
-       .text(`Generated: ${new Date().toUTCString()}`, 66, 108, { width: W - 32 });
-    doc.moveDown(4.5);
+    // ── Attribute codes to exclude from the PDF (internal/technical noise) ──
+    const EXCLUDED_ATTRS = new Set([
+      'ESKO_Dashboard_Panel', 'gs1_attributes_values', 'gs1_raw_xml',
+      'enrichment_pipeline_card', 'akeneo_status_card',
+    ]);
 
-    // Completeness bar
+    // ── Value formatter ────────────────────────────────────────────────────
+    // Converts Akeneo data values to clean human-readable strings.
+    const formatValue = (data) => {
+      if (data === null || data === undefined) return '';
+      if (typeof data === 'boolean') return data ? '✔  Yes' : '✘  No';
+      if (Array.isArray(data)) return data.join(', ');
+      if (typeof data === 'object') {
+        // Akeneo metric: { amount, unit, symbol }
+        if ('amount' in data && 'unit' in data) {
+          const amount = parseFloat(data.amount);
+          const num    = Number.isInteger(amount) ? amount : parseFloat(amount.toFixed(4)).toString();
+          // Replace µ with 'u' to avoid encoding artefacts in pdfkit's built-in fonts
+          const unit   = (data.symbol || data.unit || '').replace(/µ/g, 'u').replace(/[^\x00-\x7F]/g, '?');
+          return `${num} ${unit}`;
+        }
+        // Akeneo price: { amount, currency }
+        if ('amount' in data && 'currency' in data) {
+          return `${data.amount} ${data.currency}`;
+        }
+        // Generic object — compact JSON, truncated
+        const s = JSON.stringify(data);
+        return s.length > 80 ? s.slice(0, 77) + '…' : s;
+      }
+      const str = String(data);
+      // Truncate very long strings (SVG, JSON blobs)
+      return str.length > 120 ? str.slice(0, 117) + '…' : str;
+    };
+
+    // ── Header — dynamic height based on product name length ──────────────
+    // Measure how many lines the name will need at font-size 18, width W-32
+    const nameLineHeight = 24;
+    const charsPerLine   = Math.floor((W - 32) / 10.5); // approx chars at size 18
+    const nameLines      = Math.ceil(productName.length / charsPerLine);
+    const headerH        = Math.max(80, 52 + nameLines * nameLineHeight);
+
+    doc.rect(50, 50, W, headerH).fill(PURPLE);
+
+    // Indigo left accent bar
+    doc.rect(50, 50, 4, headerH).fill('#3730A3');
+
+    // Product name — allow wrapping
+    doc.fillColor(WHITE).font('Helvetica-Bold').fontSize(16)
+       .text(productName, 62, 62, { width: W - 24, lineBreak: true });
+
+    // UUID and date — below the name with a small gap
+    const metaY = 62 + nameLines * nameLineHeight + 4;
+    doc.font('Helvetica').fontSize(8).fillColor('rgba(255,255,255,0.7)')
+       .text(`UUID: ${productUuid}`, 62, metaY, { width: W - 24 })
+       .text(`Generated: ${new Date().toUTCString()}`, 62, metaY + 12, { width: W - 24 });
+
+    // Move cursor below header
+    doc.y = 50 + headerH + 12;
+
+    // ── Completeness bar ──────────────────────────────────────────────────
     const barY  = doc.y;
     const fill  = Math.round((completeness / 100) * W);
     const color = completeness >= 50 ? GREEN : ORANGE;
-    doc.rect(50, barY, W,    18).fill('#E5E7EB');
-    doc.rect(50, barY, fill, 18).fill(color);
-    doc.fillColor(DARK).font('Helvetica-Bold').fontSize(10)
-       .text(`${channel} completeness: ${completeness}%`, 55, barY + 4);
-    doc.moveDown(1.5);
+    doc.rect(50, barY, W,    14).fill('#E5E7EB');
+    doc.rect(50, barY, fill, 14).fill(color);
+    doc.fillColor(DARK).font('Helvetica-Bold').fontSize(9)
+       .text(`${channel}  —  ${completeness}% complete`, 55, barY + 3, { width: W - 10 });
+    doc.y = barY + 22;
 
-    // Section renderer
+    // ── Section renderer ──────────────────────────────────────────────────
     const renderSection = (title, rows) => {
       if (!rows.length) return;
-      doc.rect(50, doc.y, W, 20).fill('#F8F7FF');
-      doc.fillColor(PURPLE).font('Helvetica-Bold').fontSize(11)
-         .text(title, 56, doc.y - 16);
-      doc.moveDown(0.3);
+
+      // Section heading row
+      if (doc.y > doc.page.height - 120) doc.addPage();
+      const headY = doc.y;
+      doc.rect(50, headY, W, 18).fill('#EEF2FF');
+      doc.rect(50, headY, 3, 18).fill(PURPLE);
+      doc.fillColor(PURPLE).font('Helvetica-Bold').fontSize(9)
+         .text(title.toUpperCase(), 60, headY + 5, { width: W - 20, characterSpacing: 0.5 });
+      doc.y = headY + 22;
+
       let alt = false;
       for (const [key, val] of rows) {
-        if (doc.y > doc.page.height - 100) doc.addPage();
-        const rowY = doc.y;
-        if (alt) doc.rect(50, rowY, W, 18).fill('#F9FAFB');
-        doc.fillColor(GREY).font('Helvetica-Bold').fontSize(9)
-           .text(key, 56, rowY + 4, { width: 180 });
-        doc.fillColor(DARK).font('Helvetica').fontSize(9)
-           .text(String(val).slice(0, 300), 240, rowY + 4, { width: W - 196, lineBreak: false });
-        doc.moveDown(0.85);
-        alt = !alt;
+        if (doc.y > doc.page.height - 60) doc.addPage();
+        const rowY  = doc.y;
+        const rowH  = 16;
+
+        if (alt) doc.rect(50, rowY, W, rowH).fill('#F9FAFB');
+
+        // Key column
+        doc.fillColor(LGREY).font('Helvetica').fontSize(8)
+           .text(key, 56, rowY + 4, { width: 185, lineBreak: false });
+
+        // Separator dot
+        doc.fillColor('#D1D5DB').font('Helvetica').fontSize(8)
+           .text('·', 244, rowY + 4);
+
+        // Value column
+        doc.fillColor(DARK).font('Helvetica').fontSize(8)
+           .text(val, 256, rowY + 4, { width: W - 212, lineBreak: false });
+
+        doc.y = rowY + rowH;
+        alt   = !alt;
       }
-      doc.moveDown(0.5);
+      doc.y += 8;
     };
 
-    // Collect attributes
+    // ── Collect and format attribute values ───────────────────────────────
     const globalRows = [], scopedRows = [];
+
     for (const [attrCode, entries] of Object.entries(values)) {
+      if (EXCLUDED_ATTRS.has(attrCode)) continue;
       if (!Array.isArray(entries)) continue;
+
       for (const entry of entries) {
-        const data = entry.data;
-        if (data === null || data === undefined || data === '') continue;
-        let displayVal = Array.isArray(data) ? data.join(', ')
-                       : typeof data === 'object' ? JSON.stringify(data)
-                       : String(data);
-        if (displayVal.length > 400) displayVal = displayVal.slice(0, 397) + '…';
-        const label = (entry.locale || entry.scope)
-          ? `${attrCode} [${[entry.locale, entry.scope].filter(Boolean).join('/')}]`
-          : attrCode;
-        if (!entry.locale && !entry.scope) globalRows.push([attrCode, displayVal]);
-        else                               scopedRows.push([label, displayVal]);
+        const raw = entry.data;
+        if (raw === null || raw === undefined || raw === '') continue;
+
+        const displayVal = formatValue(raw);
+        if (!displayVal) continue;
+
+        if (!entry.locale && !entry.scope) {
+          globalRows.push([attrCode, displayVal]);
+        } else {
+          const tag = [entry.locale, entry.scope].filter(Boolean).join(' / ');
+          scopedRows.push([`${attrCode}  [${tag}]`, displayVal]);
+        }
       }
     }
 
-    renderSection('Global attributes', globalRows);
+    renderSection('Product attributes', globalRows);
     renderSection('Localised / scoped attributes', scopedRows);
 
-    // Footer
-    const footerY = doc.page.height - 40;
-    doc.rect(50, footerY - 8, W, 0.5).fill('#E5E7EB');
-    doc.fillColor(GREY).font('Helvetica').fontSize(8)
-       .text('Generated by Akeneo PIM · Esko Asset Decompactor', 50, footerY, { align: 'center', width: W });
+    // ── Footer on every page ──────────────────────────────────────────────
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
+      doc.switchToPage(range.start + i);
+      const fY = doc.page.height - 36;
+      doc.rect(50, fY - 6, W, 0.5).fill('#E5E7EB');
+      doc.fillColor(LGREY).font('Helvetica').fontSize(7)
+         .text('Generated by Akeneo PIM · Esko Asset Decompactor', 50, fY, { align: 'left', width: W / 2 });
+      doc.text(`Page ${i + 1} / ${range.count}`, 50, fY, { align: 'right', width: W });
+    }
 
+    doc.flushPages();
     doc.end();
   });
 }
