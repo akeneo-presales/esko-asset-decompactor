@@ -360,6 +360,34 @@ function getBestLocale(completenesses, channel) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fetches all attribute definitions and returns a map of
+ * { attrCode → label } using the first available locale label,
+ * falling back to the attribute code if no label is defined.
+ *
+ * @param {string} host
+ * @param {string} token
+ * @returns {Promise<object>}  e.g. { nf_sodium: "Sodium", nf_fat: "Fat", … }
+ */
+async function fetchAttributeLabels(host, token) {
+  const labels = {};
+  let nextUrl  = `${host}/api/rest/v1/attributes?limit=100&page=1`;
+
+  while (nextUrl) {
+    const res = await fetch(nextUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) break;
+    const data = await res.json();
+    for (const attr of (data._embedded?.items || [])) {
+      const code = attr.code;
+      const labelEntry = Object.values(attr.labels || {}).find(l => l && l.trim());
+      labels[code] = labelEntry || code;
+    }
+    nextUrl = data._links?.next?.href || null;
+  }
+
+  return labels;
+}
+
+/**
  * Generates a commercial product fact sheet PDF from the product's values.
  * Returns a Buffer containing the PDF binary.
  *
@@ -369,10 +397,11 @@ function getBestLocale(completenesses, channel) {
  *   values:       object,
  *   completeness: number,
  *   channel:      string,
+ *   labels:       object   — map of attrCode → human-readable label
  * }} opts
  * @returns {Promise<Buffer>}
  */
-function generateFactSheetPdf({ productUuid, productName, values, completeness, channel }) {
+function generateFactSheetPdf({ productUuid, productName, values, completeness, channel, labels = {} }) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     const doc    = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true, info: {
@@ -385,7 +414,7 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
     doc.on('end',   ()    => resolve(Buffer.concat(chunks)));
     doc.on('error', err   => reject(err));
 
-    const W      = doc.page.width - 100;   // usable width (595 - 100 = 495)
+    const W      = doc.page.width - 100;
     const PURPLE = '#4F46E5';
     const DARK   = '#1E1B4B';
     const GREY   = '#6B7280';
@@ -394,66 +423,49 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
     const ORANGE = '#F97316';
     const WHITE  = 'white';
 
-    // ── Attribute codes to exclude from the PDF (internal/technical noise) ──
     const EXCLUDED_ATTRS = new Set([
       'ESKO_Dashboard_Panel', 'gs1_attributes_values', 'gs1_raw_xml',
       'enrichment_pipeline_card', 'akeneo_status_card',
     ]);
 
-    // ── Value formatter ────────────────────────────────────────────────────
-    // Converts Akeneo data values to clean human-readable strings.
     const formatValue = (data) => {
       if (data === null || data === undefined) return '';
-      if (typeof data === 'boolean') return data ? '✔  Yes' : '✘  No';
+      if (typeof data === 'boolean') return data ? 'Yes' : 'No';
       if (Array.isArray(data)) return data.join(', ');
       if (typeof data === 'object') {
-        // Akeneo metric: { amount, unit, symbol }
         if ('amount' in data && 'unit' in data) {
           const amount = parseFloat(data.amount);
           const num    = Number.isInteger(amount) ? amount : parseFloat(amount.toFixed(4)).toString();
-          // Replace µ with 'u' to avoid encoding artefacts in pdfkit's built-in fonts
           const unit   = (data.symbol || data.unit || '').replace(/µ/g, 'u').replace(/[^\x00-\x7F]/g, '?');
           return `${num} ${unit}`;
         }
-        // Akeneo price: { amount, currency }
-        if ('amount' in data && 'currency' in data) {
-          return `${data.amount} ${data.currency}`;
-        }
-        // Generic object — compact JSON, truncated
+        if ('amount' in data && 'currency' in data) return `${data.amount} ${data.currency}`;
         const s = JSON.stringify(data);
         return s.length > 80 ? s.slice(0, 77) + '…' : s;
       }
       const str = String(data);
-      // Truncate very long strings (SVG, JSON blobs)
       return str.length > 120 ? str.slice(0, 117) + '…' : str;
     };
 
-    // ── Header — dynamic height based on product name length ──────────────
-    // Measure how many lines the name will need at font-size 18, width W-32
+    // Dynamic header height
     const nameLineHeight = 24;
-    const charsPerLine   = Math.floor((W - 32) / 10.5); // approx chars at size 18
+    const charsPerLine   = Math.floor((W - 32) / 10.5);
     const nameLines      = Math.ceil(productName.length / charsPerLine);
     const headerH        = Math.max(80, 52 + nameLines * nameLineHeight);
 
     doc.rect(50, 50, W, headerH).fill(PURPLE);
-
-    // Indigo left accent bar
     doc.rect(50, 50, 4, headerH).fill('#3730A3');
-
-    // Product name — allow wrapping
     doc.fillColor(WHITE).font('Helvetica-Bold').fontSize(16)
        .text(productName, 62, 62, { width: W - 24, lineBreak: true });
 
-    // UUID and date — below the name with a small gap
     const metaY = 62 + nameLines * nameLineHeight + 4;
     doc.font('Helvetica').fontSize(8).fillColor('rgba(255,255,255,0.7)')
        .text(`UUID: ${productUuid}`, 62, metaY, { width: W - 24 })
        .text(`Generated: ${new Date().toUTCString()}`, 62, metaY + 12, { width: W - 24 });
 
-    // Move cursor below header
     doc.y = 50 + headerH + 12;
 
-    // ── Completeness bar ──────────────────────────────────────────────────
+    // Completeness bar
     const barY  = doc.y;
     const fill  = Math.round((completeness / 100) * W);
     const color = completeness >= 50 ? GREEN : ORANGE;
@@ -463,11 +475,9 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
        .text(`${channel}  —  ${completeness}% complete`, 55, barY + 3, { width: W - 10 });
     doc.y = barY + 22;
 
-    // ── Section renderer ──────────────────────────────────────────────────
+    // Section renderer
     const renderSection = (title, rows) => {
       if (!rows.length) return;
-
-      // Section heading row
       if (doc.y > doc.page.height - 120) doc.addPage();
       const headY = doc.y;
       doc.rect(50, headY, W, 18).fill('#EEF2FF');
@@ -479,48 +489,38 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
       let alt = false;
       for (const [key, val] of rows) {
         if (doc.y > doc.page.height - 60) doc.addPage();
-        const rowY  = doc.y;
-        const rowH  = 16;
-
+        const rowY = doc.y;
+        const rowH = 16;
         if (alt) doc.rect(50, rowY, W, rowH).fill('#F9FAFB');
-
-        // Key column
         doc.fillColor(LGREY).font('Helvetica').fontSize(8)
            .text(key, 56, rowY + 4, { width: 185, lineBreak: false });
-
-        // Separator dot
         doc.fillColor('#D1D5DB').font('Helvetica').fontSize(8)
            .text('·', 244, rowY + 4);
-
-        // Value column
         doc.fillColor(DARK).font('Helvetica').fontSize(8)
            .text(val, 256, rowY + 4, { width: W - 212, lineBreak: false });
-
         doc.y = rowY + rowH;
         alt   = !alt;
       }
       doc.y += 8;
     };
 
-    // ── Collect and format attribute values ───────────────────────────────
+    // Collect attributes
     const globalRows = [], scopedRows = [];
-
     for (const [attrCode, entries] of Object.entries(values)) {
       if (EXCLUDED_ATTRS.has(attrCode)) continue;
       if (!Array.isArray(entries)) continue;
-
       for (const entry of entries) {
         const raw = entry.data;
         if (raw === null || raw === undefined || raw === '') continue;
-
         const displayVal = formatValue(raw);
         if (!displayVal) continue;
-
         if (!entry.locale && !entry.scope) {
-          globalRows.push([attrCode, displayVal]);
+          const label = labels[attrCode] || attrCode;
+          globalRows.push([label, displayVal]);
         } else {
-          const tag = [entry.locale, entry.scope].filter(Boolean).join(' / ');
-          scopedRows.push([`${attrCode}  [${tag}]`, displayVal]);
+          const tag   = [entry.locale, entry.scope].filter(Boolean).join(' / ');
+          const label = labels[attrCode] || attrCode;
+          scopedRows.push([`${label}  [${tag}]`, displayVal]);
         }
       }
     }
@@ -528,21 +528,23 @@ function generateFactSheetPdf({ productUuid, productName, values, completeness, 
     renderSection('Product attributes', globalRows);
     renderSection('Localised / scoped attributes', scopedRows);
 
-    // ── Footer on every page ──────────────────────────────────────────────
+    // Footer — use absolute coordinates only, never moveDown after switchToPage
     const range = doc.bufferedPageRange();
     for (let i = 0; i < range.count; i++) {
       doc.switchToPage(range.start + i);
       const fY = doc.page.height - 36;
       doc.rect(50, fY - 6, W, 0.5).fill('#E5E7EB');
       doc.fillColor(LGREY).font('Helvetica').fontSize(7)
-         .text('Generated by Akeneo PIM · Esko Asset Decompactor', 50, fY, { align: 'left', width: W / 2 });
-      doc.text(`Page ${i + 1} / ${range.count}`, 50, fY, { align: 'right', width: W });
+         .text('Generated by Akeneo PIM · Esko Asset Decompactor', 50, fY, { width: W / 2, lineBreak: false });
+      doc.fillColor(LGREY).font('Helvetica').fontSize(7)
+         .text(`Page ${i + 1} / ${range.count}`, 50 + W / 2, fY, { width: W / 2, align: 'right', lineBreak: false });
     }
 
     doc.flushPages();
     doc.end();
   });
 }
+
 
 /**
  * Uploads a PDF buffer, upserts the asset record in the PDF family, then
@@ -821,6 +823,7 @@ exports.generatePipelineCard = async (req, res) => {
           values:       fullProduct.values || {},
           completeness,
           channel:      cfg.completenessChannel,
+          labels:       await fetchAttributeLabels(cfg.host, token),
         });
         console.log(`PDF generated (${pdfBuffer.length} bytes).`);
 
