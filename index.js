@@ -154,6 +154,11 @@ function getConfig() {
     ? new Set(familyFilterRaw.split(',').map(s => s.trim()).filter(Boolean))
     : null;
 
+  // Optional: separate asset family for PDF files.
+  // When set, .pdf files are uploaded to this family instead of AKENEO_MEDIA_ASSET_FAMILY.
+  // Falls back to mediaAssetFamily when not set.
+  const pdfMediaAssetFamily = process.env.AKENEO_PDF_MEDIA_ASSET_FAMILY || null;
+
   return {
     host:                       process.env.AKENEO_HOST.replace(/\/$/, ''),
     clientId:                   process.env.AKENEO_CLIENT_ID,
@@ -168,6 +173,7 @@ function getConfig() {
     gs1RawXmlAttribute:         process.env.AKENEO_GS1_RAW_XML_ATTRIBUTE,
     mediaAssetFamily:           process.env.AKENEO_MEDIA_ASSET_FAMILY,
     mediaAssetProductRefAttr:   process.env.AKENEO_MEDIA_ASSET_PRODUCT_REF_ATTRIBUTE,
+    pdfMediaAssetFamily,        // string | null — overrides mediaAssetFamily for .pdf files
     assetFamilyFilter,          // Set<string> | null
   };
 }
@@ -950,29 +956,59 @@ async function upsertAssetRecord(
  *   errors:   Array<{ file: string, error: string }>
  * }>}
  */
+/**
+ * Finds all media files in the extracted archive (excluding the nft folder),
+ * uploads each one to the asset-media-files endpoint, then creates/updates
+ * an asset record in the target asset family with the product reference.
+ *
+ * PDF files are routed to pdfAssetFamily when provided; all other media
+ * files go to assetFamilyCode.
+ *
+ * Failures on individual files are caught and logged — one bad file does not
+ * abort the rest of the batch.
+ *
+ * @param {string}   host
+ * @param {string}   token
+ * @param {string[]} allFiles
+ * @param {string}   assetFamilyCode   Target family for images
+ * @param {string}   productId
+ * @param {string}   productRefAttr
+ * @param {string|null} pdfAssetFamily Target family for PDFs (falls back to assetFamilyCode)
+ * @returns {Promise<{
+ *   total: number, uploaded: number, skipped: number,
+ *   errors: Array<{ file: string, error: string }>
+ * }>}
+ */
 async function pushMediaFilesToAssetFamily(
-  host, token, allFiles, assetFamilyCode, productId, productRefAttr
+  host, token, allFiles, assetFamilyCode, productId, productRefAttr, pdfAssetFamily = null
 ) {
   const mediaFiles = findMediaFiles(allFiles);
   console.log(`  Found ${mediaFiles.length} media file(s) to upload.`);
 
-  // Fetch the family once to get the correct main media attribute code
+  // Pre-fetch main media attributes for both families (cached after first call)
   const mainMediaAttr = await fetchAssetFamilyMainMediaAttribute(host, token, assetFamilyCode);
+  const pdfMainMediaAttr = pdfAssetFamily
+    ? await fetchAssetFamilyMainMediaAttribute(host, token, pdfAssetFamily)
+    : null;
 
   const errors   = [];
   let uploaded   = 0;
   let skipped    = 0;
 
   for (const filePath of mediaFiles) {
-    const filename = path.basename(filePath);
+    const filename  = path.basename(filePath);
+    const isPdf     = /\.pdf$/i.test(filename);
+    const family    = (isPdf && pdfAssetFamily) ? pdfAssetFamily : assetFamilyCode;
+    const mediaAttr = (isPdf && pdfMainMediaAttr) ? pdfMainMediaAttr : mainMediaAttr;
+
     try {
-      console.log(`  Uploading "${filename}"…`);
+      console.log(`  Uploading "${filename}" → family "${family}"…`);
       const assetFilePath = await uploadAssetMediaFile(host, token, filePath, productId);
       const assetCode     = await upsertAssetRecord(
-        host, token, assetFamilyCode, mainMediaAttr, assetFilePath,
+        host, token, family, mediaAttr, assetFilePath,
         filename, productId, productRefAttr
       );
-      console.log(`  ✓ "${filename}" → asset "${assetCode}" in family "${assetFamilyCode}".`);
+      console.log(`  ✓ "${filename}" → asset "${assetCode}" in family "${family}".`);
       uploaded++;
     } catch (err) {
       console.error(`  ✗ Failed to upload "${filename}": ${err.message}`);
@@ -1204,7 +1240,8 @@ exports.processArtworkAsset = async (req, res) => {
     console.log(`Uploading media files to asset family "${cfg.mediaAssetFamily}"…`);
     const mediaResult = await pushMediaFilesToAssetFamily(
       cfg.host, token, allFiles,
-      cfg.mediaAssetFamily, productId, cfg.mediaAssetProductRefAttr
+      cfg.mediaAssetFamily, productId, cfg.mediaAssetProductRefAttr,
+      cfg.pdfMediaAssetFamily   // PDFs routed here when set, otherwise same family
     );
 
     // ── 15. Respond ───────────────────────────────────────────────────────
@@ -1218,10 +1255,11 @@ exports.processArtworkAsset = async (req, res) => {
       rawXmlStored:      xmlResult.stored,
       ...(xmlResult.stored === false && { rawXmlSkippedReason: xmlResult.reason }),
       mediaAssets: {
-        assetFamily:  cfg.mediaAssetFamily,
-        total:        mediaResult.total,
-        uploaded:     mediaResult.uploaded,
-        skipped:      mediaResult.skipped,
+        assetFamily:    cfg.mediaAssetFamily,
+        pdfAssetFamily: cfg.pdfMediaAssetFamily || cfg.mediaAssetFamily,
+        total:          mediaResult.total,
+        uploaded:       mediaResult.uploaded,
+        skipped:        mediaResult.skipped,
         ...(mediaResult.errors.length > 0 && { errors: mediaResult.errors }),
       },
       action,
